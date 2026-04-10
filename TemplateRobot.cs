@@ -120,7 +120,7 @@ namespace OsEngine.Robots
              "SPOT и LinearPerpetual",
              new[] { "SPOT и LinearPerpetual", "InversFutures", "Stocks MOEX", "Futures MOEX", "Bonds MOEX" }, "Base");
             _assetNameCurrent = CreateParameter("Deposit Asset", "USDT",
-                new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC", "Prime" }, "Base");
+                new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC"}, "Base");
             _volumeLong = CreateParameter("Volume Long (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _volumeShort = CreateParameter("Volume Short (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _slippagePercent = CreateParameter("Slippage (%)", 0.1m, 0.01m, 2m, 0.01m, "Base");
@@ -510,7 +510,8 @@ namespace OsEngine.Robots
                         return 0;
                     if (sec.Lot <= 0) return 0;
 
-                    volume = Math.Floor(posSize / sec.Lot * mult) / mult;
+                    decimal posSizeUsd = balance * entryPrice * (riskPct / 100m) / realStopPct;
+                    volume = Math.Floor(posSizeUsd / sec.Lot * mult) / mult;
                     break;
 
                 case "Futures MOEX":
@@ -559,7 +560,6 @@ namespace OsEngine.Robots
         private decimal GetAssetValue(Portfolio portfolio, string assetName)
         {
             if (portfolio == null) return 0;
-            if (assetName == "Prime") return portfolio.ValueCurrent;
 
             List<PositionOnBoard> positions = portfolio.GetPositionOnBoard();
             if (positions == null) return 0;
