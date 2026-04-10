@@ -448,7 +448,8 @@ namespace OsEngine.Robots
 
                 // Фьючерсы и опционы не должны быть истёкшими
                 if ((sec.SecurityType == SecurityType.Futures || sec.SecurityType == SecurityType.Option) &&
-                    sec.Expiration != DateTime.MinValue && sec.Expiration < DateTime.Now)
+                    sec.Expiration.Year > 1970 &&
+                    sec.Expiration < DateTime.Now)
                     return 0;
 
                 // Облигации — не входим если до погашения меньше N дней
@@ -509,7 +510,7 @@ namespace OsEngine.Robots
                         return 0;
                     if (sec.Lot <= 0) return 0;
 
-                    volume = Math.Floor(posSize * entryPrice / sec.Lot * mult) / mult;
+                    volume = Math.Floor(posSize / sec.Lot * mult) / mult;
                     break;
 
                 case "Futures MOEX":
