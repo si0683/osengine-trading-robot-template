@@ -47,6 +47,7 @@ namespace OsEngine.Robots
         private readonly StrategyParameterDecimal _volumeShort;
         private readonly StrategyParameterDecimal _slippagePercent;
         private readonly StrategyParameterDecimal _feePercent;
+        private readonly StrategyParameterInt _bondDaysToMaturity;
         private readonly StrategyParameterButton _tradePeriodsShowDialogButton;
 
         // ── Параметры неторгового времени ────────────────────────────────────────────
@@ -66,6 +67,7 @@ namespace OsEngine.Robots
         private decimal _curVolumeShort;
         private decimal _curSlippagePercent;
         private decimal _curFeePercent;
+        private int _curBondDaysToMaturity;
         private int _curTimeZoneUtc;
         // Временные поля, используются только внутри одного синхронного вызова GetVolume()
         private decimal _curStopPercent;   // % расстояния до стопа от цены входа
@@ -115,15 +117,15 @@ namespace OsEngine.Robots
 
             // Настройки объёма
             _modeTrade = CreateParameter("Trade Section",
-                "SPOT и LinearPerpetual",
-                new[] { "SPOT и LinearPerpetual", "InversFutures", "Stocks MOEX", "Futures MOEX" }, "Base");
+             "SPOT и LinearPerpetual",
+             new[] { "SPOT и LinearPerpetual", "InversFutures", "Stocks MOEX", "Futures MOEX", "Bonds MOEX" }, "Base");
             _assetNameCurrent = CreateParameter("Deposit Asset", "USDT",
                 new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC", "Prime" }, "Base");
             _volumeLong = CreateParameter("Volume Long (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _volumeShort = CreateParameter("Volume Short (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _slippagePercent = CreateParameter("Slippage (%)", 0.1m, 0.01m, 2m, 0.01m, "Base");
             _feePercent = CreateParameter("Fee (%)", 0.1m, 0.01m, 1m, 0.01m, "Base");
-
+            _bondDaysToMaturity = CreateParameter("Bond days to maturity", 30, 1, 365, 1, "Base");
             // TODO: создать параметры индикаторов здесь
             // _lengthMyIndicator = CreateParameter("Length", 20, 5, 200, 5, "Indicator");
 
@@ -179,6 +181,7 @@ namespace OsEngine.Robots
             _curSlippagePercent = _slippagePercent.ValueDecimal;
             _curFeePercent = _feePercent.ValueDecimal;
             _curTimeZoneUtc = _timeZoneUtc.ValueInt;
+            _curBondDaysToMaturity = _bondDaysToMaturity.ValueInt;
         }
 
         // ════════════════════════════════════════════════════════════════════════════
@@ -414,12 +417,15 @@ namespace OsEngine.Robots
         /// </summary>
         private decimal GetVolume(Side side, decimal entryPrice, decimal stopPrice, decimal stopPercent)
         {
+            // --- Входные параметры ---
             if (stopPercent <= 0) return 0;
             if (entryPrice <= 0) return 0;
 
+            // --- Баланс ---
             decimal balance = GetAssetValue(_tab.Portfolio, _assetNameCurrent.ValueString);
             if (balance <= 0) return 0;
 
+            // --- Риск ---
             decimal realStopPct = stopPercent / 100m
                                 + _curSlippagePercent / 100m
                                 + _curFeePercent / 100m * 2m;
@@ -430,37 +436,87 @@ namespace OsEngine.Robots
             decimal posSize = riskMoney / realStopPct;
             if (posSize < 0.5m) return 0;
 
+            // --- Инструмент ---
             Security sec = _tab.Security;
             if (sec == null) return 0;
 
-            decimal mult = sec.DecimalsVolume > 0
-                ? (decimal)Math.Pow(10, sec.DecimalsVolume)
-                : 1m;
+            // Торги должны быть активны
+            if (sec.State != SecurityStateType.Activ) return 0;
 
+            // Цена входа в допустимых пределах
+            if (sec.PriceLimitHigh > 0 && entryPrice > sec.PriceLimitHigh) return 0;
+            if (sec.PriceLimitLow > 0 && entryPrice < sec.PriceLimitLow) return 0;
+
+            // Фьючерсы и опционы не должны быть истёкшими
+            if ((sec.SecurityType == SecurityType.Futures || sec.SecurityType == SecurityType.Option) &&
+                sec.Expiration != DateTime.MinValue && sec.Expiration < DateTime.Now)
+                return 0;
+
+            // Облигации — не входим если до погашения меньше N дней
+            if (sec.SecurityType == SecurityType.Bond &&
+                sec.MaturityDate != DateTime.MinValue &&
+                sec.MaturityDate < DateTime.Now.AddDays(_curBondDaysToMaturity))
+                return 0;
+
+            // --- Расчёт объёма ---
+            decimal mult = sec.DecimalsVolume > 0 ? (decimal)Math.Pow(10, sec.DecimalsVolume) : 1m;
             decimal volume = 0;
 
             switch (_modeTrade.ValueString)
             {
                 case "SPOT и LinearPerpetual":
-                    // posSize (в котируемой валюте) делим на цену → объём в базовой валюте
-                    volume = Math.Floor(posSize / entryPrice * mult) / mult;
+                    if (sec.SecurityType != SecurityType.CurrencyPair &&
+                        sec.SecurityType != SecurityType.Futures &&
+                        sec.SecurityType != SecurityType.None)
+                        return 0;
+
+                    if (sec.UsePriceStepCostToCalculateVolume && sec.PriceStep > 0 && sec.PriceStepCost > 0)
+                    {
+                        decimal contractCost = entryPrice / sec.PriceStep * sec.PriceStepCost;
+                        if (contractCost <= 0) return 0;
+                        volume = Math.Floor(posSize / contractCost * mult) / mult;
+                    }
+                    else
+                    {
+                        volume = Math.Floor(posSize / entryPrice * mult) / mult;
+                    }
                     break;
 
                 case "Stocks MOEX":
-                    // posSize делим на цену и на размер лота → число лотов
+                    if (sec.SecurityType != SecurityType.Stock &&
+                        sec.SecurityType != SecurityType.Fund &&
+                        sec.SecurityType != SecurityType.None)
+                        return 0;
                     if (sec.Lot <= 0) return 0;
+
                     volume = Math.Floor(posSize / entryPrice / sec.Lot * mult) / mult;
                     break;
 
+                case "Bonds MOEX":
+                    if (sec.SecurityType != SecurityType.Bond &&
+                        sec.SecurityType != SecurityType.None)
+                        return 0;
+                    if (sec.Lot <= 0 || sec.NominalCurrent <= 0) return 0;
+
+                    decimal bondPrice = sec.NominalCurrent * entryPrice / 100m;
+                    if (bondPrice <= 0) return 0;
+                    volume = Math.Floor(posSize / bondPrice / sec.Lot * mult) / mult;
+                    break;
+
                 case "InversFutures":
-                    // Инверсный фьючерс: контракт номинирован в базовой валюте (напр. BTC),
-                    // posSize в USD → умножаем на entryPrice, делим на размер контракта
+                    if (sec.SecurityType != SecurityType.Futures &&
+                        sec.SecurityType != SecurityType.None)
+                        return 0;
                     if (sec.Lot <= 0) return 0;
+
                     volume = Math.Floor(posSize * entryPrice / sec.Lot * mult) / mult;
                     break;
 
                 case "Futures MOEX":
-                    // Расчёт по риску через стоимость шага цены
+                    if (sec.SecurityType != SecurityType.Futures &&
+                        sec.SecurityType != SecurityType.Option &&
+                        sec.SecurityType != SecurityType.None)
+                        return 0;
                     if (sec.PriceStep <= 0 || sec.PriceStepCost <= 0 || stopPrice <= 0)
                         return 0;
 
@@ -472,7 +528,7 @@ namespace OsEngine.Robots
                     if (lossPerContract <= 0) return 0;
 
                     decimal byRisk = Math.Floor(riskMoney / lossPerContract);
-                    decimal byGo = Math.Floor(balance / margin); // сколько контрактов позволяет ГО
+                    decimal byGo = Math.Floor(balance / margin);
                     volume = Math.Min(byRisk, byGo);
                     break;
 
@@ -480,9 +536,21 @@ namespace OsEngine.Robots
                     return 0;
             }
 
-            // Проверка минимального объёма
-            if (sec.MinTradeAmount > 0 && volume < sec.MinTradeAmount)
-                return 0;
+            if (volume <= 0) return 0;
+
+            // --- Округление по шагу объёма ---
+            if (sec.VolumeStep > 0)
+                volume = Math.Floor(volume / sec.VolumeStep) * sec.VolumeStep;
+
+            // --- Проверка минимального объёма ---
+            if (sec.MinTradeAmount > 0)
+            {
+                decimal minVolume = sec.MinTradeAmountType == MinTradeAmountType.C_Currency
+                    ? sec.MinTradeAmount / entryPrice
+                    : sec.MinTradeAmount;
+
+                if (volume < minVolume) return 0;
+            }
 
             return volume;
         }
@@ -500,6 +568,7 @@ namespace OsEngine.Robots
                 if (p.SecurityNameCode.Equals(assetName, StringComparison.OrdinalIgnoreCase))
                     return p.ValueCurrent;
             }
+
             return 0;
         }
     }
