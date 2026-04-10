@@ -411,10 +411,6 @@ namespace OsEngine.Robots
             return GetVolume(side, entryPrice, stopPrice, stopPercent);
         }
 
-        /// <summary>
-        /// Возвращает количество лотов/контрактов.
-        /// Читает _curStopPercent и _curStopPrice — должны быть выставлены вызовом CalcVolume().
-        /// </summary>
         private decimal GetVolume(Side side, decimal entryPrice, decimal stopPrice, decimal stopPercent)
         {
             // --- Входные параметры ---
@@ -440,23 +436,27 @@ namespace OsEngine.Robots
             Security sec = _tab.Security;
             if (sec == null) return 0;
 
-            // Торги должны быть активны
-            if (sec.State != SecurityStateType.Activ) return 0;
+            if (StartProgram != StartProgram.IsOsOptimizer &&
+                StartProgram != StartProgram.IsTester)
+            {
+                // Торги должны быть активны
+                if (sec.State != SecurityStateType.Activ) return 0;
 
-            // Цена входа в допустимых пределах
-            if (sec.PriceLimitHigh > 0 && entryPrice > sec.PriceLimitHigh) return 0;
-            if (sec.PriceLimitLow > 0 && entryPrice < sec.PriceLimitLow) return 0;
+                // Цена входа в допустимых пределах
+                if (sec.PriceLimitHigh > 0 && entryPrice > sec.PriceLimitHigh) return 0;
+                if (sec.PriceLimitLow > 0 && entryPrice < sec.PriceLimitLow) return 0;
 
-            // Фьючерсы и опционы не должны быть истёкшими
-            if ((sec.SecurityType == SecurityType.Futures || sec.SecurityType == SecurityType.Option) &&
-                sec.Expiration != DateTime.MinValue && sec.Expiration < DateTime.Now)
-                return 0;
+                // Фьючерсы и опционы не должны быть истёкшими
+                if ((sec.SecurityType == SecurityType.Futures || sec.SecurityType == SecurityType.Option) &&
+                    sec.Expiration != DateTime.MinValue && sec.Expiration < DateTime.Now)
+                    return 0;
 
-            // Облигации — не входим если до погашения меньше N дней
-            if (sec.SecurityType == SecurityType.Bond &&
-                sec.MaturityDate != DateTime.MinValue &&
-                sec.MaturityDate < DateTime.Now.AddDays(_curBondDaysToMaturity))
-                return 0;
+                // Облигации — не входим если до погашения меньше N дней
+                if (sec.SecurityType == SecurityType.Bond &&
+                    sec.MaturityDate != DateTime.MinValue &&
+                    sec.MaturityDate < DateTime.Now.AddDays(_curBondDaysToMaturity))
+                    return 0;
+            }
 
             // --- Расчёт объёма ---
             decimal mult = sec.DecimalsVolume > 0 ? (decimal)Math.Pow(10, sec.DecimalsVolume) : 1m;
