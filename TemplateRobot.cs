@@ -120,7 +120,7 @@ namespace OsEngine.Robots
              "SPOT и LinearPerpetual",
              new[] { "SPOT и LinearPerpetual", "InversFutures", "Stocks MOEX", "Futures MOEX", "Bonds MOEX" }, "Base");
             _assetNameCurrent = CreateParameter("Deposit Asset", "USDT",
-                new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC"}, "Base");
+                new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC", "Prime" }, "Base");
             _volumeLong = CreateParameter("Volume Long (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _volumeShort = CreateParameter("Volume Short (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _slippagePercent = CreateParameter("Slippage (%)", 0.1m, 0.01m, 2m, 0.01m, "Base");
@@ -510,8 +510,17 @@ namespace OsEngine.Robots
                         return 0;
                     if (sec.Lot <= 0) return 0;
 
-                    decimal posSizeUsd = balance * entryPrice * (riskPct / 100m) / realStopPct;
-                    volume = Math.Floor(posSizeUsd / sec.Lot * mult) / mult;
+                    // Защита: базовый актив инверсного фьючерса извлекаем из названия инструмента
+                    // BTCUSD.I → BTC, ETHUSD.I → ETH
+                    // Пользователь должен указать именно его, иначе вход запрещён
+                    string selectedAsset = _assetNameCurrent.ValueString;
+                    string secName = sec.Name.ToUpper(); // "BTCUSD.I"
+
+                    if (!secName.StartsWith(selectedAsset.ToUpper()))
+                        return 0;
+
+                    decimal posSizeInverse = balance * entryPrice * (riskPct / 100m) / realStopPct;
+                    volume = Math.Floor(posSizeInverse / sec.Lot * mult) / mult;
                     break;
 
                 case "Futures MOEX":
@@ -560,6 +569,12 @@ namespace OsEngine.Robots
         private decimal GetAssetValue(Portfolio portfolio, string assetName)
         {
             if (portfolio == null) return 0;
+
+            // Prime = суммарный USD-эквивалент портфеля.
+            // Использовать только для SPOT и LinearPerpetual / Stocks MOEX / Bonds MOEX.
+            // Для InversFutures указывать конкретный базовый актив (например BTC),
+            // так как формула умножает balance на entryPrice.
+            if (assetName == "Prime") return portfolio.ValueCurrent;
 
             List<PositionOnBoard> positions = portfolio.GetPositionOnBoard();
             if (positions == null) return 0;
