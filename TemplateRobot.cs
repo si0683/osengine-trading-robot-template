@@ -423,7 +423,7 @@ namespace OsEngine.Robots
         }
 
         // Контекст одного вызова GetVolume: накапливает промежуточные значения для лога.
-        // Живёт только на стеке — никакого выделения в куче.
+     
         private struct VolumeCalcCtx
         {
             public Side Side;
