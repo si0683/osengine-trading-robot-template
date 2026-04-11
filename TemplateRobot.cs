@@ -39,7 +39,7 @@ namespace OsEngine.Robots
 
         // ── Базовые параметры ────────────────────────────────────────────────────────
         private readonly StrategyParameterString _regime;
-
+        private StrategyParameterString _tradeLogOnOff;
         // ── Параметры объёма ─────────────────────────────────────────────────────────
         private readonly StrategyParameterString _modeTrade;
         private readonly StrategyParameterString _assetNameCurrent;
@@ -121,6 +121,7 @@ namespace OsEngine.Robots
              new[] { "SPOT и LinearPerpetual", "InversFutures", "Stocks MOEX", "Futures MOEX", "Bonds MOEX" }, "Base");
             _assetNameCurrent = CreateParameter("Deposit Asset", "USDT",
             new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC", "ETH", "XRP", "LTC", "SOL", "Prime" }, "Base");
+            _tradeLogOnOff = CreateParameter("Trade debug log", "Off", new[] { "On", "Off" }, "Base");
             _volumeLong = CreateParameter("Volume Long (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _volumeShort = CreateParameter("Volume Short (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _slippagePercent = CreateParameter("Slippage (%)", 0.1m, 0.01m, 2m, 0.01m, "Base");
@@ -436,32 +437,34 @@ namespace OsEngine.Robots
             Security sec = _tab.Security;
             if (sec == null) return 0;
 
+            string rejectReason = "ok";
+            decimal volume = 0;
+
             if (StartProgram != StartProgram.IsOsOptimizer &&
                 StartProgram != StartProgram.IsTester)
             {
-                // Торги должны быть активны
-                if (sec.State != SecurityStateType.Activ) return 0;
+                if (sec.State != SecurityStateType.Activ)
+                { rejectReason = $"state not active ({sec.State})"; goto LogAndReturn; }
 
-                // Цена входа в допустимых пределах
-                if (sec.PriceLimitHigh > 0 && entryPrice > sec.PriceLimitHigh) return 0;
-                if (sec.PriceLimitLow > 0 && entryPrice < sec.PriceLimitLow) return 0;
+                if (sec.PriceLimitHigh > 0 && entryPrice > sec.PriceLimitHigh)
+                { rejectReason = $"entryPrice {entryPrice} > PriceLimitHigh {sec.PriceLimitHigh}"; goto LogAndReturn; }
 
-                // Фьючерсы и опционы не должны быть истёкшими
+                if (sec.PriceLimitLow > 0 && entryPrice < sec.PriceLimitLow)
+                { rejectReason = $"entryPrice {entryPrice} < PriceLimitLow {sec.PriceLimitLow}"; goto LogAndReturn; }
+
                 if ((sec.SecurityType == SecurityType.Futures || sec.SecurityType == SecurityType.Option) &&
                     sec.Expiration.Year > 1970 &&
                     sec.Expiration < DateTime.Now)
-                    return 0;
+                { rejectReason = $"instrument expired (Expiration={sec.Expiration:yyyy-MM-dd})"; goto LogAndReturn; }
 
-                // Облигации — не входим если до погашения меньше N дней
                 if (sec.SecurityType == SecurityType.Bond &&
                     sec.MaturityDate != DateTime.MinValue &&
                     sec.MaturityDate < DateTime.Now.AddDays(_curBondDaysToMaturity))
-                    return 0;
+                { rejectReason = $"bond maturity too close ({sec.MaturityDate:yyyy-MM-dd})"; goto LogAndReturn; }
             }
 
             // --- Расчёт объёма ---
             decimal mult = sec.DecimalsVolume > 0 ? (decimal)Math.Pow(10, sec.DecimalsVolume) : 1m;
-            decimal volume = 0;
 
             switch (_modeTrade.ValueString)
             {
@@ -469,12 +472,12 @@ namespace OsEngine.Robots
                     if (sec.SecurityType != SecurityType.CurrencyPair &&
                         sec.SecurityType != SecurityType.Futures &&
                         sec.SecurityType != SecurityType.None)
-                        return 0;
+                    { rejectReason = $"wrong secType for SPOT ({sec.SecurityType})"; goto LogAndReturn; }
 
                     if (sec.UsePriceStepCostToCalculateVolume && sec.PriceStep > 0 && sec.PriceStepCost > 0)
                     {
                         decimal contractCost = entryPrice / sec.PriceStep * sec.PriceStepCost;
-                        if (contractCost <= 0) return 0;
+                        if (contractCost <= 0) { rejectReason = "contractCost <= 0"; goto LogAndReturn; }
                         volume = Math.Floor(posSize / contractCost * mult) / mult;
                     }
                     else
@@ -487,8 +490,8 @@ namespace OsEngine.Robots
                     if (sec.SecurityType != SecurityType.Stock &&
                         sec.SecurityType != SecurityType.Fund &&
                         sec.SecurityType != SecurityType.None)
-                        return 0;
-                    if (sec.Lot <= 0) return 0;
+                    { rejectReason = $"wrong secType for Stocks ({sec.SecurityType})"; goto LogAndReturn; }
+                    if (sec.Lot <= 0) { rejectReason = "Lot <= 0"; goto LogAndReturn; }
 
                     volume = Math.Floor(posSize / entryPrice / sec.Lot * mult) / mult;
                     break;
@@ -496,22 +499,21 @@ namespace OsEngine.Robots
                 case "Bonds MOEX":
                     if (sec.SecurityType != SecurityType.Bond &&
                         sec.SecurityType != SecurityType.None)
-                        return 0;
-                    if (sec.Lot <= 0 || sec.NominalCurrent <= 0) return 0;
+                    { rejectReason = $"wrong secType for Bonds ({sec.SecurityType})"; goto LogAndReturn; }
+                    if (sec.Lot <= 0 || sec.NominalCurrent <= 0)
+                    { rejectReason = $"Lot={sec.Lot} or NominalCurrent={sec.NominalCurrent} <= 0"; goto LogAndReturn; }
 
                     decimal bondPrice = sec.NominalCurrent * entryPrice / 100m;
-                    if (bondPrice <= 0) return 0;
+                    if (bondPrice <= 0) { rejectReason = "bondPrice <= 0"; goto LogAndReturn; }
                     volume = Math.Floor(posSize / bondPrice / sec.Lot * mult) / mult;
                     break;
 
                 case "InversFutures":
                     if (sec.SecurityType != SecurityType.Futures &&
                         sec.SecurityType != SecurityType.None)
-                        return 0;
-                    if (sec.Lot <= 0) return 0;
+                    { rejectReason = $"wrong secType for InversFutures ({sec.SecurityType})"; goto LogAndReturn; }
+                    if (sec.Lot <= 0) { rejectReason = "Lot <= 0"; goto LogAndReturn; }
 
-                    // Защита: только крипто-активы из списка параметра допустимы.
-                    // USDT, USDC, USD, RUB, EUR, Prime — дадут миллионы контрактов.
                     string selectedAsset = _assetNameCurrent.ValueString.ToUpper();
                     bool isUsdAsset = selectedAsset == "USDT" ||
                                       selectedAsset == "USDC" ||
@@ -519,7 +521,8 @@ namespace OsEngine.Robots
                                       selectedAsset == "RUB" ||
                                       selectedAsset == "EUR" ||
                                       selectedAsset == "PRIME";
-                    if (isUsdAsset) return 0;
+                    if (isUsdAsset)
+                    { rejectReason = $"asset '{selectedAsset}' is USD/fiat — укажите базовый крипто-актив (BTC/ETH/...)"; goto LogAndReturn; }
 
                     decimal posSizeInverse = balance * entryPrice * (riskPct / 100m) / realStopPct;
                     volume = Math.Floor(posSizeInverse / sec.Lot * mult) / mult;
@@ -529,16 +532,16 @@ namespace OsEngine.Robots
                     if (sec.SecurityType != SecurityType.Futures &&
                         sec.SecurityType != SecurityType.Option &&
                         sec.SecurityType != SecurityType.None)
-                        return 0;
+                    { rejectReason = $"wrong secType for FuturesMOEX ({sec.SecurityType})"; goto LogAndReturn; }
                     if (sec.PriceStep <= 0 || sec.PriceStepCost <= 0 || stopPrice <= 0)
-                        return 0;
+                    { rejectReason = $"PriceStep={sec.PriceStep} PriceStepCost={sec.PriceStepCost} stopPrice={stopPrice}"; goto LogAndReturn; }
 
                     decimal margin = side == Side.Buy ? sec.MarginBuy : sec.MarginSell;
-                    if (margin <= 0) return 0;
+                    if (margin <= 0) { rejectReason = $"margin <= 0 (MarginBuy={sec.MarginBuy} MarginSell={sec.MarginSell})"; goto LogAndReturn; }
 
                     decimal stopPts = Math.Abs(entryPrice - stopPrice);
                     decimal lossPerContract = stopPts / sec.PriceStep * sec.PriceStepCost;
-                    if (lossPerContract <= 0) return 0;
+                    if (lossPerContract <= 0) { rejectReason = "lossPerContract <= 0"; goto LogAndReturn; }
 
                     decimal byRisk = Math.Floor(riskMoney / lossPerContract);
                     decimal byGo = Math.Floor(balance / margin);
@@ -546,10 +549,11 @@ namespace OsEngine.Robots
                     break;
 
                 default:
-                    return 0;
+                    rejectReason = $"unknown mode '{_modeTrade.ValueString}'";
+                    goto LogAndReturn;
             }
 
-            if (volume <= 0) return 0;
+            if (volume <= 0) { rejectReason = "volume <= 0 after calculation"; goto LogAndReturn; }
 
             // --- Округление по шагу объёма ---
             if (sec.VolumeStep > 0)
@@ -562,7 +566,48 @@ namespace OsEngine.Robots
                     ? sec.MinTradeAmount / entryPrice
                     : sec.MinTradeAmount;
 
-                if (volume < minVolume) return 0;
+                if (volume < minVolume)
+                { rejectReason = $"volume={volume} < minVolume={minVolume} (MinTradeAmount={sec.MinTradeAmount} type={sec.MinTradeAmountType})"; goto LogAndReturn; }
+            }
+
+            LogAndReturn:
+            if (_tradeLogOnOff.ValueString == "On")
+            {
+                string log =
+                $@" -GET VOLUME DEBUG
+                SECURITY               = {sec.Name} | TYPE = {sec.SecurityType} | STATE = {sec.State}
+                MODE                   = {_modeTrade.ValueString}
+                SIDE                   = {side}
+                ------ ASSET / BALANCE ------
+                ASSET                  = {_assetNameCurrent.ValueString}
+                BALANCE                = {balance:F6}
+                ------ RISK ------
+                RISK PCT               = {riskPct:F4} %
+                RISK MONEY             = {riskMoney:F6}
+                STOP %                 = {stopPercent:F6} %
+                SLIPPAGE %             = {_curSlippagePercent:F4} %
+                FEE %                  = {_curFeePercent:F4} %
+                REAL STOP PCT          = {realStopPct:F6}
+                POS SIZE               = {posSize:F6}
+                ------ PRICE ------
+                ENTRY PRICE            = {entryPrice:F4}
+                STOP PRICE             = {stopPrice:F4}
+                ------ INSTRUMENT ------
+                LOT                    = {sec.Lot}
+                DECIMALS VOL           = {sec.DecimalsVolume}
+                VOLUME STEP            = {sec.VolumeStep}
+                MIN TRADE AMOUNT       = {sec.MinTradeAmount} ({sec.MinTradeAmountType})
+                PRICE STEP             = {sec.PriceStep}
+                STEP COST              = {sec.PriceStepCost}
+                EXPIRATION             = {sec.Expiration:yyyy-MM-dd}
+                MARGIN BUY             = {sec.MarginBuy}
+                MARGIN SELL            = {sec.MarginSell}
+                ------ RESULT ------
+                VOLUME                 = {volume}
+                REJECT REASON          = {rejectReason}
+                -";
+
+                SendNewLogMessage(log, Logging.LogMessageType.System);
             }
 
             return volume;
