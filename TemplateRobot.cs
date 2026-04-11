@@ -138,7 +138,8 @@ namespace OsEngine.Robots
             // Подписки
             ParametrsChangeByUser += OnParametrsChangeByUser;
             _tab.CandleFinishedEvent += _tab_CandleFinishedEvent;
-            _tab.PositionOpeningSuccesEvent += SetStopLoss;  // асинхронно, после подтверждения биржи
+            _tab.PositionOpeningSuccesEvent += SetStopLoss;    // асинхронно, после подтверждения биржи
+            _tab.PositionOpeningFailEvent += OnOpeningFail;  // очищаем стоп если ордер не прошёл
 
             SyncParams();
 
@@ -411,6 +412,29 @@ namespace OsEngine.Robots
             return GetVolume(side, entryPrice, stopPrice, stopPercent);
         }
 
+        // ════════════════════════════════════════════════════════════════════════════
+        //   ОЧИСТКА СТОПА ПРИ НЕУДАЧНОМ ОТКРЫТИИ
+        //
+        //   Вызывается из PositionOpeningFailEvent — когда ордер на открытие
+        //   отклонён биржей или отменён до исполнения. В этом случае SetStopLoss
+        //   не вызовется, и запись в _stopByOrderId осталась бы навсегда.
+        // ════════════════════════════════════════════════════════════════════════════
+
+        private void OnOpeningFail(Position pos)
+        {
+            if (pos.OpenOrders == null || pos.OpenOrders.Count == 0)
+                return;
+
+            int orderKey = pos.OpenOrders[0].NumberUser;
+
+            if (_stopByOrderId.TryRemove(orderKey, out _))
+            {
+                SendNewLogMessage(
+                    $"[STOP] Стоп удалён из словаря (OpeningFail) orderKey={orderKey} pos#{pos.Number}",
+                    LogMessageType.System);
+            }
+        }
+
         // Контекст одного вызова GetVolume: накапливает промежуточные значения для лога.
         // Живёт только на стеке — никакого выделения в куче.
         private struct VolumeCalcCtx
@@ -513,6 +537,10 @@ namespace OsEngine.Robots
                         ctx.Sec.SecurityType != SecurityType.Fund &&
                         ctx.Sec.SecurityType != SecurityType.None)
                         return Reject(ref ctx, $"wrong secType for Stocks ({ctx.Sec.SecurityType})");
+                    // ВНИМАНИЕ: 'Prime' возвращает суммарную стоимость портфеля (деньги + позиции).
+                    // Для расчёта риска нужен только денежный остаток — укажите "RUB".
+                    if (_assetNameCurrent.ValueString.Equals("Prime", StringComparison.OrdinalIgnoreCase))
+                        return Reject(ref ctx, "asset 'Prime' недопустим для Stocks MOEX — укажите 'RUB' (денежный остаток)");
                     if (ctx.Sec.Lot <= 0) return Reject(ref ctx, "Lot <= 0");
 
                     ctx.Volume = Math.Floor(ctx.PosSize / entryPrice / ctx.Sec.Lot * mult) / mult;
@@ -522,6 +550,10 @@ namespace OsEngine.Robots
                     if (ctx.Sec.SecurityType != SecurityType.Bond &&
                         ctx.Sec.SecurityType != SecurityType.None)
                         return Reject(ref ctx, $"wrong secType for Bonds ({ctx.Sec.SecurityType})");
+                    // ВНИМАНИЕ: 'Prime' возвращает суммарную стоимость портфеля (деньги + позиции).
+                    // Для расчёта риска нужен только денежный остаток — укажите "RUB".
+                    if (_assetNameCurrent.ValueString.Equals("Prime", StringComparison.OrdinalIgnoreCase))
+                        return Reject(ref ctx, "asset 'Prime' недопустим для Bonds MOEX — укажите 'RUB' (денежный остаток)");
                     if (ctx.Sec.Lot <= 0 || ctx.Sec.NominalCurrent <= 0)
                         return Reject(ref ctx, $"Lot={ctx.Sec.Lot} or NominalCurrent={ctx.Sec.NominalCurrent} <= 0");
 
@@ -553,11 +585,10 @@ namespace OsEngine.Robots
                         ctx.Sec.SecurityType != SecurityType.None)
                         return Reject(ref ctx, $"wrong secType for FuturesMOEX ({ctx.Sec.SecurityType})");
 
-                    // ВНИМАНИЕ: 'Prime' (portfolio.ValueCurrent) возвращает USD-эквивалент,
-                    // а маржа на MOEX считается в рублях — расчёт будет некорректным.
-                    // Используйте "RUB" в качестве Deposit Asset для Futures MOEX.
+                    // ВНИМАНИЕ: 'Prime' возвращает суммарную стоимость портфеля (деньги + позиции).
+                    // Для расчёта риска нужен только денежный остаток — укажите "RUB".
                     if (_assetNameCurrent.ValueString.Equals("Prime", StringComparison.OrdinalIgnoreCase))
-                        return Reject(ref ctx, "asset 'Prime' недопустим для Futures MOEX — укажите 'RUB'");
+                        return Reject(ref ctx, "asset 'Prime' недопустим для Futures MOEX — укажите 'RUB' (денежный остаток)");
 
                     if (ctx.Sec.PriceStep <= 0 || ctx.Sec.PriceStepCost <= 0 || stopPrice <= 0)
                         return Reject(ref ctx, $"PriceStep={ctx.Sec.PriceStep} PriceStepCost={ctx.Sec.PriceStepCost} stopPrice={stopPrice}");
@@ -656,8 +687,10 @@ namespace OsEngine.Robots
         {
             if (portfolio == null) return 0;
 
-            // Prime = суммарный USD-эквивалент портфеля.
-            // Использовать только для SPOT и LinearPerpetual / Stocks MOEX / Bonds MOEX.
+            // Prime = суммарная стоимость портфеля в валюте счёта (деньги + открытые позиции).
+            // Подходит для SPOT / LinearPerpetual, где баланс и позиции в одной валюте.
+            // Для MOEX (Stocks, Bonds, Futures) использовать нельзя: нужен денежный остаток ("RUB"),
+            // а не суммарная стоимость счёта вместе с позициями.
             // Для InversFutures указывать конкретный базовый актив (например BTC),
             // так как формула умножает balance на entryPrice.
             if (assetName == "Prime") return portfolio.ValueCurrent;
