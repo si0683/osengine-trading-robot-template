@@ -414,31 +414,36 @@ namespace OsEngine.Robots
 
         private decimal GetVolume(Side side, decimal entryPrice, decimal stopPrice, decimal stopPercent)
         {
-            // --- Входные параметры ---
-            if (stopPercent <= 0) return 0;
-            if (entryPrice <= 0) return 0;
-
-            // --- Баланс ---
-            decimal balance = GetAssetValue(_tab.Portfolio, _assetNameCurrent.ValueString);
-            if (balance <= 0) return 0;
-
-            // --- Риск ---
-            decimal realStopPct = stopPercent / 100m
-                                + _curSlippagePercent / 100m
-                                + _curFeePercent / 100m * 2m;
-            if (realStopPct <= 0) return 0;
-
-            decimal riskPct = side == Side.Buy ? _curVolumeLong : _curVolumeShort;
-            decimal riskMoney = balance * (riskPct / 100m);
-            decimal posSize = riskMoney / realStopPct;
-            if (posSize < 0.5m) return 0;
-
-            // --- Инструмент ---
-            Security sec = _tab.Security;
-            if (sec == null) return 0;
-
             string rejectReason = "ok";
             decimal volume = 0;
+            decimal balance = 0;
+            decimal realStopPct = 0;
+            decimal riskPct = 0;
+            decimal riskMoney = 0;
+            decimal posSize = 0;
+            Security sec = null;
+
+            // --- Входные параметры ---
+            if (stopPercent <= 0) { rejectReason = "stopPercent <= 0"; goto LogAndReturn; }
+            if (entryPrice <= 0) { rejectReason = "entryPrice <= 0"; goto LogAndReturn; }
+
+            // --- Баланс ---
+            balance = GetAssetValue(_tab.Portfolio, _assetNameCurrent.ValueString);
+            if (balance <= 0) { rejectReason = "balance <= 0"; goto LogAndReturn; }
+
+            // --- Риск ---
+            realStopPct = stopPercent / 100m
+                        + _curSlippagePercent / 100m
+                        + _curFeePercent / 100m * 2m;
+            if (realStopPct <= 0) { rejectReason = "realStopPct <= 0"; goto LogAndReturn; }
+
+            riskPct = side == Side.Buy ? _curVolumeLong : _curVolumeShort;
+            riskMoney = balance * (riskPct / 100m);
+            posSize = riskMoney / realStopPct;
+
+            // --- Инструмент ---
+            sec = _tab.Security;
+            if (sec == null) { rejectReason = "sec == null"; goto LogAndReturn; }
 
             if (StartProgram != StartProgram.IsOsOptimizer &&
                 StartProgram != StartProgram.IsTester)
@@ -575,7 +580,7 @@ namespace OsEngine.Robots
             {
                 string log =
                 $@" -GET VOLUME DEBUG
-                SECURITY               = {sec.Name} | TYPE = {sec.SecurityType} | STATE = {sec.State}
+                SECURITY               = {sec?.Name} | TYPE = {sec?.SecurityType} | STATE = {sec?.State}
                 MODE                   = {_modeTrade.ValueString}
                 SIDE                   = {side}
                 ------ ASSET / BALANCE ------
@@ -593,15 +598,15 @@ namespace OsEngine.Robots
                 ENTRY PRICE            = {entryPrice:F4}
                 STOP PRICE             = {stopPrice:F4}
                 ------ INSTRUMENT ------
-                LOT                    = {sec.Lot}
-                DECIMALS VOL           = {sec.DecimalsVolume}
-                VOLUME STEP            = {sec.VolumeStep}
-                MIN TRADE AMOUNT       = {sec.MinTradeAmount} ({sec.MinTradeAmountType})
-                PRICE STEP             = {sec.PriceStep}
-                STEP COST              = {sec.PriceStepCost}
-                EXPIRATION             = {sec.Expiration:yyyy-MM-dd}
-                MARGIN BUY             = {sec.MarginBuy}
-                MARGIN SELL            = {sec.MarginSell}
+                LOT                    = {sec?.Lot}
+                DECIMALS VOL           = {sec?.DecimalsVolume}
+                VOLUME STEP            = {sec?.VolumeStep}
+                MIN TRADE AMOUNT       = {sec?.MinTradeAmount} ({sec?.MinTradeAmountType})
+                PRICE STEP             = {sec?.PriceStep}
+                STEP COST              = {sec?.PriceStepCost}
+                EXPIRATION             = {sec?.Expiration:yyyy-MM-dd}
+                MARGIN BUY             = {sec?.MarginBuy}
+                MARGIN SELL            = {sec?.MarginSell}
                 ------ RESULT ------
                 VOLUME                 = {volume}
                 REJECT REASON          = {rejectReason}
