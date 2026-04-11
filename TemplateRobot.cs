@@ -120,7 +120,7 @@ namespace OsEngine.Robots
              "SPOT и LinearPerpetual",
              new[] { "SPOT и LinearPerpetual", "InversFutures", "Stocks MOEX", "Futures MOEX", "Bonds MOEX" }, "Base");
             _assetNameCurrent = CreateParameter("Deposit Asset", "USDT",
-                new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC", "Prime" }, "Base");
+            new[] { "USDT", "USDC", "USD", "RUB", "EUR", "BTC", "ETH", "XRP", "LTC", "SOL", "Prime" }, "Base");
             _volumeLong = CreateParameter("Volume Long (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _volumeShort = CreateParameter("Volume Short (%)", 2.5m, 0.1m, 50m, 0.1m, "Base");
             _slippagePercent = CreateParameter("Slippage (%)", 0.1m, 0.01m, 2m, 0.01m, "Base");
@@ -510,14 +510,16 @@ namespace OsEngine.Robots
                         return 0;
                     if (sec.Lot <= 0) return 0;
 
-                    // Защита: базовый актив инверсного фьючерса извлекаем из названия инструмента
-                    // BTCUSD.I → BTC, ETHUSD.I → ETH
-                    // Пользователь должен указать именно его, иначе вход запрещён
-                    string selectedAsset = _assetNameCurrent.ValueString;
-                    string secName = sec.Name.ToUpper(); // "BTCUSD.I"
-
-                    if (!secName.StartsWith(selectedAsset.ToUpper()))
-                        return 0;
+                    // Защита: только крипто-активы из списка параметра допустимы.
+                    // USDT, USDC, USD, RUB, EUR, Prime — дадут миллионы контрактов.
+                    string selectedAsset = _assetNameCurrent.ValueString.ToUpper();
+                    bool isUsdAsset = selectedAsset == "USDT" ||
+                                      selectedAsset == "USDC" ||
+                                      selectedAsset == "USD" ||
+                                      selectedAsset == "RUB" ||
+                                      selectedAsset == "EUR" ||
+                                      selectedAsset == "PRIME";
+                    if (isUsdAsset) return 0;
 
                     decimal posSizeInverse = balance * entryPrice * (riskPct / 100m) / realStopPct;
                     volume = Math.Floor(posSizeInverse / sec.Lot * mult) / mult;
