@@ -32,7 +32,7 @@
 | Поддержка Inverse Futures | ✅ Готово |
 | Поддержка Bonds MOEX | ✅ Готово |
 | Начальный стоп-лосс (CloseAtStop) | ✅ Готово |
-| Трейлинг-стоп (CloseAtTrailingStop) | ⚙️ Заготовка в комментариях — нужно добавить `trailLevel` из индикатора и раскомментировать вызов |
+| Трейлинг-стоп (CloseAtTrailingStop) | ❌ Не входит в шаблон — реализуйте самостоятельно при необходимости |
 | Неторговые периоды (по времени и дням) | ✅ Готово |
 | Очистка словаря стопов при неудачном открытии | ✅ Готово |
 | Синхронизация параметров GUI | ✅ Готово |
@@ -105,7 +105,7 @@ TemplateRobot.cs
 │   └── LogicOpenPosition  — логика открытия
 │
 ├── LogicOpenPosition         ← TODO: ваши сигналы входа
-├── LogicClosePosition        ← TODO: ваш трейлинг/выход
+├── LogicClosePosition        ← TODO: дополнительные условия выхода по сигналу
 ├── SetStopLoss               — автоматически при открытии позиции (PositionOpeningSuccesEvent)
 ├── OnOpeningFail             — очистка словаря стопов при неудаче ордера (PositionOpeningFailEvent)
 │
@@ -387,31 +387,31 @@ private void LogicOpenPosition(List<Candle> candles)
 }
 ```
 
-### Шаг 5 — Реализовать трейлинг-выход
+### Шаг 5 — Добавить дополнительные условия выхода (опционально)
 
-В методе `LogicClosePosition()` нужно получить уровень трейлинга из индикатора и раскомментировать вызов `CloseAtTrailingStop`:
+Начальный стоп-лосс уже выставляется автоматически через `SetStopLoss`. В `LogicClosePosition` можно добавить выход по сигналу индикатора — например, закрыть позицию при развороте:
 
 ```csharp
 private void LogicClosePosition(List<Candle> candles)
 {
     List<Position> openPositions = _tab.PositionsOpenAll;
 
-    decimal trailLong  = _ema.DataSeries[0].Last;  // трейлинг для лонга
-    decimal trailShort = _ema.DataSeries[0].Last;  // трейлинг для шорта
+    decimal emaValue = _ema.DataSeries[0].Last;
 
     for (int i = 0; openPositions != null && i < openPositions.Count; i++)
     {
         Position pos = openPositions[i];
         if (pos.State != PositionStateType.Open) continue;
 
-        decimal trailLevel = pos.Direction == Side.Buy ? trailLong : trailShort;
+        decimal lastPrice = candles[candles.Count - 1].Close;
 
-        bool trailIsBetter = pos.Direction == Side.Buy
-            ? trailLevel > pos.EntryPrice
-            : trailLevel < pos.EntryPrice;
+        // Выход из лонга при закрытии цены ниже EMA
+        if (pos.Direction == Side.Buy && lastPrice < emaValue)
+            _tab.CloseAtMarket(pos, pos.OpenVolume);
 
-        if (trailIsBetter)
-            _tab.CloseAtTrailingStop(pos, trailLevel, trailLevel);
+        // Выход из шорта при закрытии цены выше EMA
+        if (pos.Direction == Side.Sell && lastPrice > emaValue)
+            _tab.CloseAtMarket(pos, pos.OpenVolume);
     }
 }
 ```
